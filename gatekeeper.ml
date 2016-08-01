@@ -4,11 +4,25 @@ open Lwt
 let log_src = Logs.Src.create "ucn.gatekeeper"
 module Log = (val Logs.src_log log_src : Logs.LOG)
 
+module Tbl = struct
+  type t = (X509.t, string list) Hashtbl.t
+
+  let init () : t = Hashtbl.create 7
+
+  let check t cert domain =
+    let l = Hashtbl.find t cert in
+    List.mem domain l
+end
+
+
 module Main
          (Stack: STACKV4)
+         (Resolver: Resolver_lwt.S)
+         (Conduit: Conduit_mirage.S)
          (Keys: KV_RO)
          (Clock: V1.CLOCK)= struct
 
+  module Client = Cohttp_mirage.Client
   module TLS = Tls_mirage.Make(Stack.TCPV4)
   module Http = Cohttp_mirage.Server(TLS)
 
@@ -16,19 +30,82 @@ module Main
     Cohttp.Header.of_list [
       "Access-Control-Allow-Origin", "*"]
 
-  let handler (f, _) req body =
-    match TLS.epoch f with
-    | `Error ->
-       Http.respond_error ~status:`Unauthorized ~body:"" ()
+  let peer_cert f = match TLS.epoch f with
+    | `Error -> return None
     | `Ok data ->
        let log =
          Tls.Core.sexp_of_epoch_data data
          |> Sexplib.Sexp.to_string in
-       Log.app (fun f -> f "%s" log);
-       Http.respond ~status:`OK ~body:Cohttp_lwt_body.empty ()
+       Log.debug (fun f -> f "%s" log);
+       return data.Tls.Core.peer_certificate
 
 
-  let upgrade tls_conf f =
+  let query_params req =
+    let uri = Cohttp.Request.uri req in
+    let params = Uri.query uri in
+    let ip = List.assoc "ip" params |> List.hd in
+    let port = List.assoc "port" params |> List.hd |> int_of_string in
+    let domain = List.assoc "domain" params |> List.hd in
+    (ip, port, domain)
+
+
+  (* start NAT and coressponding unikernels for [domain] *)
+  let wakeup_domain domain =
+      return (`Error ())
+
+
+  let insert_nat_rule ctx (ip, port) req_endp dst_endp =
+    let open Ezjsonm in
+    let l = ["ip", fst req_endp |> string;
+             "port", snd req_endp |> string_of_int |> string;
+             "dst_ip", fst dst_endp |> string;
+             "dst_port", snd dst_endp |> string_of_int |> string] in
+    let body =
+      dict l |> to_string
+      |> Cohttp_lwt_body.of_string in
+    let uri = Uri.make ~scheme:"http" ~host:ip ~port ~path:"insert" () in
+
+    Client.post ~ctx ~body ~headers uri >>= fun (res, body) ->
+    let status = Cohttp.Response.status res in
+    if status <> `OK then begin
+      Cohttp_lwt_body.to_string body >>= fun b ->
+      Log.err (fun f -> f "insert_nat_rule %s" b);
+      return (`Error ()) end
+    else
+      Cohttp_lwt_body.to_string body >>= fun str ->
+      from_string str
+      |> value
+      |> get_dict
+      |> fun obj ->
+         let ip = List.assoc "ip" obj |> get_string in
+         let port = List.assoc "port" obj |> get_int in
+         return (`Ok (ip, port))
+
+
+  let handler (tbl, ctx) (f, _) req body =
+    peer_cert f >>= function
+    | None -> Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
+    | Some cert ->
+      let ip, port, domain = query_params req in
+      if Tbl.check tbl cert domain then
+        wakeup_domain domain >>= function
+        | `Error _ -> Lwt.fail (Failure "wakeup_domain")
+        | `Ok (nat_endp, dst_endp) ->
+        insert_nat_rule ctx nat_endp (ip, port) dst_endp >>= function
+        | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
+        | `Ok (ex_ip, ex_port) ->
+           let body =
+             let l = ["ip", ex_ip |> Ezjsonm.string;
+                      "port", string_of_int ex_port |> Ezjsonm.string] in
+             let obj = Ezjsonm.dict l in
+             Ezjsonm.to_string obj
+             |> Cohttp_lwt_body.of_string in
+           Http.respond ~status:`OK ~body ()
+      else
+        Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
+
+
+  let upgrade conf tls_conf f =
     TLS.server_of_flow tls_conf f >>= function
     | `Error e ->
        Log.err (fun f -> f "upgrade: %s" (TLS.error_message e));
@@ -37,7 +114,7 @@ module Main
        Log.err (fun f -> f "upgrade: EOF");
        return_unit
     | `Ok f ->
-       let t = Http.make ~callback:handler () in
+       let t = Http.make ~callback:(handler conf) () in
        Http.(listen t f)
 
 
@@ -49,8 +126,11 @@ module Main
     Lwt.return conf
 
 
-  let start stack kv _ _ =
+  let start stack resolver conduit kv _ _ =
     tls_init kv >>= fun tls_conf ->
-    Stack.listen_tcpv4 stack ~port:4433 (upgrade tls_conf);
+
+    let tbl = Tbl.init () in
+    let ctx = Client.ctx resolver conduit in
+    Stack.listen_tcpv4 stack ~port:4433 (upgrade (tbl, ctx) tls_conf);
     Stack.listen stack
 end
