@@ -82,7 +82,7 @@ module Main
          return (`Ok (ip, port))
 
 
-  let handler (tbl, ctx) (f, _) req body =
+  let handler (jitsu, tbl, ctx) (f, _) req body =
     peer_cert f >>= function
     | None -> Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
     | Some cert ->
@@ -126,11 +126,17 @@ module Main
     Lwt.return conf
 
 
+  let async_hook = function
+    | exn -> Log.err (fun f -> f "async_hook %s" (Printexc.to_string exn))
+
+
   let start stack resolver conduit kv _ _ =
+    Lwt.async_exception_hook := async_hook;
     tls_init kv >>= fun tls_conf ->
+    Gk_jitsu.init Clock.time 10.0 [] >>= fun jitsu ->
 
     let tbl = Tbl.init () in
     let ctx = Client.ctx resolver conduit in
-    Stack.listen_tcpv4 stack ~port:4433 (upgrade (tbl, ctx) tls_conf);
+    Stack.listen_tcpv4 stack ~port:4433 (upgrade (jitsu, tbl, ctx) tls_conf);
     Stack.listen stack
 end
