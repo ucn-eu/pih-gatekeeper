@@ -20,11 +20,11 @@ open Lwt.Infix
 let read path =
   let safe_read h k =
     Lwt.catch
-      (fun () -> Xs.read h k >>= fun v -> Lwt.return (Some v))
+      (fun () -> OS.Xs.read h k >>= fun v -> Lwt.return (Some v))
       (function Xs_protocol.Enoent _ -> Lwt.return_none | e -> raise e)
   in
-  Xs.make () >>= fun xsc ->
-  Xs.(immediate xsc (fun h ->
+  OS.Xs.make () >>= fun xsc ->
+  OS.Xs.(immediate xsc (fun h ->
       safe_read h path
     )) >>= function
   | None -> Lwt.return_none
@@ -40,11 +40,11 @@ let wait path ?value:(value=None) ?timeout:(timeout=5.0) () =
   let wait_for_key () =
     let safe_read h k =
       Lwt.catch
-        (fun () -> Xs.read h k >>= fun v -> Lwt.return (Some v))
+        (fun () -> OS.Xs.read h k >>= fun v -> Lwt.return (Some v))
         (function Xs_protocol.Enoent _ -> Lwt.return_none | e -> raise e)
     in
-    Xs.make () >>= fun xsc ->
-    Xs.(wait xsc (fun h ->
+    OS.Xs.make () >>= fun xsc ->
+    OS.Xs.(wait xsc (fun h ->
         safe_read h path >>= fun r ->
         match r, value with
         | None,_   -> raise Xs_protocol.Eagain

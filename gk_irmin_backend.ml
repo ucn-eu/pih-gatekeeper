@@ -59,7 +59,7 @@ module Make (B : Irmin.S_MAKER) = struct
     Printf.printf "irmin_backend: %s\n" msg
 
   let create ?root:(root="irmin/test") ?log:(log=default_log) () =
-    let task msg = Irmin.Task.create ~date:(Int64.of_float (Unix.gettimeofday ())) ~owner:"jitsu" msg in
+    let task msg = Irmin.Task.create ~date:0L ~owner:"jitsu" msg in
     let config = Irmin_git.config ~root ~bare:true () in
     I.Repo.create config >>= I.master task >>= fun connection ->
     Lwt.return { connection ; log}
