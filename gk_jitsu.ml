@@ -186,7 +186,7 @@ end
 module Context = struct let v () = return None end
 module Store_Maker = Irmin_mirage.Irmin_git.Memory(Context)(Git.Inflate.None)
 
-module Vm_backend = Gk_libxl_backend.Make
+module Vm_backend = Gk_libxl_proxy_backend
 module Storage_backend = Gk_irmin_backend.Make(Store_Maker)
 module Jitsu = Make(Vm_backend)(Storage_backend)
 

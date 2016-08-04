@@ -5,8 +5,7 @@ PKG ezjsonm
 PKG mirage-xen
 PKG irmin.mirage
 PKG uuidm
-PKG xenlight
-PKG xenstore
+PKG vchan
 
 S .
 B _build

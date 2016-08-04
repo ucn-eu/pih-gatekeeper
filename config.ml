@@ -18,14 +18,16 @@ let keys = generic_kv_ro "cert"
 
 
 let () =
-  let libraries = [
-      "tls.mirage";
+  let libraries =
+    [ "tls.mirage";
       "mirage-http";
       "mirage-xen";
-      "xenlight";
       "irmin.mirage";
       "uuidm";
-      "logs"] in
+      "logs";
+      "vchan";
+      "vchan.xen";
+    ] in
   register ~libraries "gatekeeper" [
     main $ stack $ resolver_impl $ conduit_impl $ keys $ default_clock;
   ]
