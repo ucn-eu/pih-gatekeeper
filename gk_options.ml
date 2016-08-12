@@ -96,12 +96,6 @@ let ipaddr_of_string_exn v key_name =
   with
   | Ipaddr.Parse_error (msg, _) -> raise (Invalid_format (Printf.sprintf "%s: %s '%s'. IPv4 or IPv6 address expected." key_name msg v))
 
-let dns_name_of_string_exn v key_name =
-  try
-    (Dns.Name.of_string v)
-  with
-  | Dns.Name.BadDomainName _ -> raise (Invalid_format (Printf.sprintf "%s: '%s'. Domain name expected." key_name v))
-
 let file_name_of_string_exn v key_name =
   let exists = Sys.file_exists v in
   let dir = Sys.is_directory v in
@@ -144,12 +138,6 @@ let get_float config key =
 
 let get_float_list config key =
   get_list config key float_of_string_exn
-
-let get_dns_name config key =
-  get config key dns_name_of_string_exn
-
-let get_dns_name_list config key =
-  get_list config key dns_name_of_string_exn
 
 let get_file_name config key =
   get config key file_name_of_string_exn
