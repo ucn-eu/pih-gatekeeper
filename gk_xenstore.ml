@@ -20,11 +20,11 @@ open Lwt.Infix
 let read path =
   let safe_read h k =
     Lwt.catch
-      (fun () -> OS.Xs.read h k >>= fun v -> Lwt.return (Some v))
+      (fun () -> Xs.read h k >>= fun v -> Lwt.return (Some v))
       (function Xs_protocol.Enoent _ -> Lwt.return_none | e -> raise e)
   in
-  OS.Xs.make () >>= fun xsc ->
-  OS.Xs.(immediate xsc (fun h ->
+  Xs.make () >>= fun xsc ->
+  Xs.(immediate xsc (fun h ->
       safe_read h path
     )) >>= function
   | None -> Lwt.return_none
@@ -40,11 +40,11 @@ let wait path ?value:(value=None) ?timeout:(timeout=5.0) () =
   let wait_for_key () =
     let safe_read h k =
       Lwt.catch
-        (fun () -> OS.Xs.read h k >>= fun v -> Lwt.return (Some v))
+        (fun () -> Xs.read h k >>= fun v -> Lwt.return (Some v))
         (function Xs_protocol.Enoent _ -> Lwt.return_none | e -> raise e)
     in
-    OS.Xs.make () >>= fun xsc ->
-    OS.Xs.(wait xsc (fun h ->
+    Xs.make () >>= fun xsc ->
+    Xs.(wait xsc (fun h ->
         safe_read h path >>= fun r ->
         match r, value with
         | None,_   -> raise Xs_protocol.Eagain
@@ -53,7 +53,7 @@ let wait path ?value:(value=None) ?timeout:(timeout=5.0) () =
       ))
   in
   let wait_for_timeout () =
-    OS.Time.sleep timeout >>= fun () ->
+    Lwt_unix.sleep timeout >>= fun () ->
     Lwt.return `Timeout
   in
   Lwt.pick [
