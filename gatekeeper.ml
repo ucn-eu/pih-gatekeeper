@@ -12,6 +12,18 @@ module Tbl = struct
   let check t cert domain =
     let l = Hashtbl.find t cert in
     List.mem domain l
+
+  let check_always_true t cert domain =
+    let key_id cert =
+      let len = 6 in
+      let buf = Buffer.create len in
+      X509.public_key cert
+      |> X509.key_id
+      |> fun cst -> Cstruct.sub cst 0 len
+      |> Cstruct.hexdump_to_buffer buf
+      |> fun () -> Buffer.contents buf in
+    Log.info (fun f -> f "check true: %s for %s" (key_id cert) domain);
+    true
 end
 
 
@@ -50,8 +62,11 @@ module Main
 
 
   (* start NAT and coressponding unikernels for [domain] *)
-  let wakeup_domain domain =
-      return (`Error ())
+  let wakeup_domain jitsu domain =
+      Lwt.catch (fun () ->
+        Gk_jitsu.start jitsu domain >>= fun endp ->
+        return @@ `Ok (endp, endp))
+        (function exn -> return @@ `Error ())
 
 
   let insert_nat_rule ctx (ip, port) req_endp dst_endp =
@@ -87,8 +102,8 @@ module Main
     | None -> Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
     | Some cert ->
       let ip, port, domain = query_params req in
-      if Tbl.check tbl cert domain then
-        wakeup_domain domain >>= function
+      if Tbl.check_always_true tbl cert domain then
+        wakeup_domain jitsu domain >>= function
         | `Error _ -> Lwt.fail (Failure "wakeup_domain")
         | `Ok (nat_endp, dst_endp) ->
         insert_nat_rule ctx nat_endp (ip, port) dst_endp >>= function
@@ -131,9 +146,10 @@ module Main
 
 
   let start stack resolver conduit kv _ _ =
-    Lwt.async_exception_hook := async_hook;
+    let () = Lwt.async_exception_hook := async_hook in
     tls_init kv >>= fun tls_conf ->
-    Gk_jitsu.init Clock.time 10.0 [] >>= fun jitsu ->
+
+    Gk_jitsu.init Clock.time 10.0 Vm_configs.conf >>= fun jitsu ->
 
     let tbl = Tbl.init () in
     let ctx = Client.ctx resolver conduit in

@@ -14,7 +14,7 @@ let stack =
 let resolver_impl = resolver_dns stack
 let conduit_impl = conduit_direct stack
 
-let keys = generic_kv_ro "cert"
+let keys = crunch "xen_cert"
 
 
 let () =

@@ -65,13 +65,14 @@ module Make
     | `Disconnected s -> (Printf.sprintf "Disconnected: %s" s)
     | `Unable_to_connect s -> (Printf.sprintf "Unable to connect: %s" s)
     | `Unknown s -> (Printf.sprintf "%s" s)
+    | `Server s -> (Printf.sprintf "Server: %s" s)
 
   let or_vm_backend_error msg fn t =
     fn t >>= function
     | `Error e -> Lwt.fail (Failure (Printf.sprintf "%s: %s" (string_of_error e) msg))
     | `Ok t -> return t
 
-  let get_vm_name t vm_uuid =
+  let get_running_vm_name t vm_uuid =
     or_vm_backend_error "Unable to get VM name from backend" (Vm_backend.get_name t.vm_backend) vm_uuid >>= fun vm_name ->
     match vm_name with
     | None -> Lwt.return "<unknown>"
@@ -84,7 +85,7 @@ module Make
     get_vm_state t vm_uuid >>= fun vm_state ->
     match vm_state with
     | Gk_vm_state.Running ->
-      get_vm_name t vm_uuid >>= fun vm_name ->
+      get_running_vm_name t vm_uuid >>= fun vm_name ->
       let uuid_s = Uuidm.to_string vm_uuid in
       Storage_backend.get_stop_mode t.storage ~vm_uuid >>= fun stop_mode ->
       begin match stop_mode with
@@ -101,6 +102,10 @@ module Make
     | Gk_vm_state.Paused
     | Gk_vm_state.Suspended
     | Gk_vm_state.Unknown -> Lwt.return_unit (* VM already stopped or nothing we can do... *)
+
+  let get_vm_name t vm_uuid =
+    Storage_backend.get_vm_config t.storage vm_uuid >>= fun config ->
+    return @@ Hashtbl.find config "name"
 
   let start_vm t vm_uuid =
     get_vm_state t vm_uuid >>= fun vm_state ->
@@ -239,3 +244,27 @@ let init time timeout conf =
      return t
 
 
+let start t domain_name =
+  Storage_backend.get_vm_list t.Jitsu.storage >>= fun vm_uuid_list ->
+  Lwt_list.filter_s (fun uuid ->
+    Jitsu.get_vm_name t uuid >>= fun name ->
+    if name = domain_name then return_true
+    else return_false) vm_uuid_list >>= function
+  | [] ->
+     let m = Printf.sprintf "no vm's name is %s" domain_name in
+     Log.err (fun f -> f "%s" m);
+     Lwt.fail (Failure m)
+  | vm_uuid :: _ ->
+     Jitsu.start_vm t vm_uuid >>= fun () ->
+     Storage_backend.get_ip t.Jitsu.storage ~vm_uuid >>= function
+     | None ->
+        let m = Printf.sprintf "no ip for %s" domain_name in
+        Log.err (fun f -> f "%s" m);
+        Lwt.fail (Failure m)
+     | Some ip ->
+     Storage_backend.get_vm_config t.Jitsu.storage ~vm_uuid >>= fun tbl ->
+     let port =
+       if not (Hashtbl.mem tbl "port") then 8080
+       else Hashtbl.find tbl "port" |> int_of_string in
+     return port >>= fun port ->
+     return (Ipaddr.V4.to_string ip, port)

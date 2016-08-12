@@ -15,7 +15,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-type error = [ `Not_found | `Disconnected of string | `Unknown of string | `Unable_to_connect of string | `Not_supported | `Invalid_config of string ]
+type error = [ `Not_found | `Disconnected of string | `Unknown of string | `Unable_to_connect of string | `Not_supported | `Invalid_config of string | `Server of string]
 type config = (string, string) Hashtbl.t
 
 module type VM_BACKEND =
