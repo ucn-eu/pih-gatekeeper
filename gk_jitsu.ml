@@ -148,7 +148,8 @@ module Make
     let fn = Vm_backend.configure_vm t.vm_backend in
     or_vm_backend_error "Unable to configure VM" fn vm_config >>= fun vm_uuid ->
     Storage_backend.add_vm t.storage ~vm_uuid ~vm_ip ~vm_stop_mode ~response_delay ~wait_for_key ~use_synjitsu ~vm_config >>= fun () ->
-    Storage_backend.add_vm_domain t.storage ~vm_uuid ~domain_name ~domain_ttl
+    Storage_backend.add_vm_domain t.storage ~vm_uuid ~domain_name ~domain_ttl >>= fun () ->
+    Storage_backend.set_last_request_timestamp t.storage ~vm_uuid ~domain_name (t.time ())
 
 
   (* iterate through t.name_table and stop VMs that haven't received
