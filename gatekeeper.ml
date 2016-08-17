@@ -64,23 +64,25 @@ module Main
   (* start NAT and coressponding unikernels for [domain] *)
   let wakeup_domain jitsu domain =
       Lwt.catch (fun () ->
-        Gk_jitsu.start jitsu domain >>= fun endp ->
-        return @@ `Ok (endp, endp))
+        Gk_jitsu.start jitsu domain >>= fun domain_endp ->
+        return @@ `Ok domain_endp)
         (function exn -> return @@ `Error ())
 
 
   let insert_nat_rule ctx (ip, port) req_endp dst_endp =
     let open Ezjsonm in
     let l = ["ip", fst req_endp |> string;
-             "port", snd req_endp |> string_of_int |> string;
+             "port", snd req_endp |> int;
              "dst_ip", fst dst_endp |> string;
-             "dst_port", snd dst_endp |> string_of_int |> string] in
+             "dst_port", snd dst_endp |> int] in
     let body =
       dict l |> to_string
       |> Cohttp_lwt_body.of_string in
     let uri = Uri.make ~scheme:"http" ~host:ip ~port ~path:"insert" () in
 
+    Log.info (fun f -> f "try to insert %s to %s" (dict l |> to_string) (Uri.to_string uri));
     Client.post ~ctx ~body ~headers uri >>= fun (res, body) ->
+    Log.info (fun f -> f "returned");
     let status = Cohttp.Response.status res in
     if status <> `OK then begin
       Cohttp_lwt_body.to_string body >>= fun b ->
@@ -97,7 +99,7 @@ module Main
          return (`Ok (ip, port))
 
 
-  let handler (jitsu, tbl, ctx) (f, _) req body =
+  let handler (jitsu, br_endp, tbl, ctx) (f, _) req body =
     peer_cert f >>= function
     | None -> Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
     | Some cert ->
@@ -105,8 +107,8 @@ module Main
       if Tbl.check_always_true tbl cert domain then
         wakeup_domain jitsu domain >>= function
         | `Error _ -> Lwt.fail (Failure "wakeup_domain")
-        | `Ok (nat_endp, dst_endp) ->
-        insert_nat_rule ctx nat_endp (ip, port) dst_endp >>= function
+        | `Ok dst_endp ->
+        insert_nat_rule ctx br_endp (ip, port) dst_endp >>= function
         | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
         | `Ok (ex_ip, ex_port) ->
            let body =
@@ -149,10 +151,13 @@ module Main
     let () = Lwt.async_exception_hook := async_hook in
     tls_init kv >>= fun tls_conf ->
 
-    Gk_jitsu.init Clock.time 10.0 Vm_configs.conf >>= fun jitsu ->
+    Gk_jitsu.init Clock.time 20.0 Vm_configs.conf >>= fun jitsu ->
+    wakeup_domain jitsu "bridge" >>= function
+    | `Error _ -> Lwt.fail (Failure "can't start pih-bridge")
+    | `Ok br_endp ->
 
     let tbl = Tbl.init () in
     let ctx = Client.ctx resolver conduit in
-    Stack.listen_tcpv4 stack ~port:4433 (upgrade (jitsu, tbl, ctx) tls_conf);
+    Stack.listen_tcpv4 stack ~port:4433 (upgrade (jitsu, br_endp, tbl, ctx) tls_conf);
     Stack.listen stack
 end
