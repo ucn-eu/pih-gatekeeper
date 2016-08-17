@@ -61,3 +61,4 @@ type msg = {
 } [@@deriving sexp]
 
 
+let id_of_msg m = m.mId

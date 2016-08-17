@@ -63,12 +63,13 @@ let error_message = function
 
 
 let to_response m = function
-  | `Ok o -> log_s "OK" >>= fun () -> return @@ `Ok (m o)
-  | `Error e -> log_s "ERROR" >>= fun () -> return @@ `Error (error_message e)
+  | `Ok o -> return @@ `Ok (m o)
+  | `Error e -> return @@ `Error (error_message e)
 
 
 let dispatch_call msg =
-  log_s ("call for " ^ msg.func_name) >>= fun () ->
+  let s = Printf.sprintf "[%d] call for %s" msg.mId msg.func_name in
+  log_s s >>= fun () ->
   match msg.request with
   | `Connect (domid, uri) ->
      let m t =
@@ -127,20 +128,27 @@ let dispatch_call msg =
      VM.start_vm t uuid config >>= to_response m
 
 
-let rec process (ic, oc) =
+let rec process cnt cache (ic, oc) =
   Vc.IO.read_line ic >>= function
   | None -> log_s "EOF" >>= return
   | Some str ->
      let msg = str
        |> Sexplib.Sexp.of_string
        |> Gk_msg.msg_of_sexp in
-     dispatch_call msg >>= fun response ->
+     let id = Gk_msg.id_of_msg msg in
+     (match id, cache with
+     | id, Some (last_id, last_response) when id = last_id -> begin
+        log_s "hit cache" >>= fun () ->
+        return last_response end
+     | _ -> dispatch_call msg) >>= fun response ->
      let res_msg = {msg with response}
        |> Gk_msg.sexp_of_msg
        |> Sexplib.Sexp.to_string in
+     let cnt = cnt + String.length res_msg in
+     log_s ("writing " ^ (string_of_int cnt)) >>= fun () ->
      Vc.IO.write oc res_msg >>= fun () ->
-     Vc.IO.flush oc >>= fun () ->
-     process (ic, oc)
+     (*Vc.IO.flush oc >>= fun () ->*)
+     process cnt (Some (id, response)) (ic, oc)
 
 
 let main () =
@@ -154,7 +162,7 @@ let main () =
   Xs.make () >>= fun xs ->
   let rec aux () =
     listen xs server_name port >>= fun client ->
-    process client in
+    process 0 None client in
   aux ()
 
 

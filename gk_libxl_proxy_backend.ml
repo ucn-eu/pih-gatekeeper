@@ -34,23 +34,35 @@ let send_req t ~func_name ~request fn =
     |> Sexplib.Sexp.to_string
     |> with_endline
     |> Cstruct.of_string in
-  Log.info (fun f -> f "[%d] call %s" mId func_name);
-  Vc.write t.vchan buf >>= function
-  | `Ok () -> begin
-     Vc.read t.vchan >>= function
-     | `Ok buf ->
-        buf |> Cstruct.to_string
-        |> fun str ->
-           Log.info (fun f -> f "response %s" str);
-           Sexplib.Sexp.of_string str
-        |> msg_of_sexp
-        |> parse_response fn
-     | `Eof | `Error _ ->
-        Log.err (fun f -> f "request Vc.read");
-        return @@ `Error (`Unknown "Vc.read") end
-  | `Eof | `Error _ ->
-     Log.err (fun f -> f "request Vc.write");
-     return @@ `Error (`Unknown "Vc.write")
+  let send mId func_name buf =
+    Log.info (fun f -> f "[%d] call %s" mId func_name);
+    Vc.write t.vchan buf >>= function
+    | `Ok () -> begin
+        Vc.read t.vchan >>= function
+        | `Ok buf ->
+           buf |> Cstruct.to_string
+           |> fun str ->
+              Log.info (fun f -> f "response %s" str);
+              Sexplib.Sexp.of_string str
+              |> msg_of_sexp
+              |> parse_response fn
+        | `Eof | `Error _ ->
+          Log.err (fun f -> f "request Vc.read");
+          return @@ `Error (`Unknown "Vc.read") end
+    | `Eof | `Error _ ->
+       Log.err (fun f -> f "request Vc.write");
+       return @@ `Error (`Unknown "Vc.write") in
+
+  let rec try_hard cnt =
+    Lwt.catch (fun () -> send mId func_name buf) (function
+    | exn ->
+       if cnt < 3 then begin
+         Log.err (fun f -> f "retry after exn: %s" (Printexc.to_string exn));
+         try_hard (succ cnt) end
+       else begin
+         Log.err (fun f -> f "give up after %d times" cnt);
+         Lwt.fail exn end) in
+  try_hard 0
 
 
 let register_client xs =

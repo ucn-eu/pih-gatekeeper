@@ -32,3 +32,5 @@ type msg = {
 
 val msg_of_sexp : Sexplib.Sexp.t -> msg
 val sexp_of_msg : msg -> Sexplib.Sexp.t
+
+val id_of_msg : msg -> int
