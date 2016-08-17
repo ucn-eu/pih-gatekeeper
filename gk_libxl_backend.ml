@@ -121,7 +121,7 @@ module Make = struct
     Xenlight.ctx_alloc logger
 
   let default_log s =
-    Printf.fprintf stderr "libxl_backend: %s" s
+    Printf.fprintf stderr "libxl_backend: %s%!" s
 
   let connect ?log_f:(log_f=default_log) ?connstr:(_) () =
     try
@@ -180,62 +180,60 @@ module Make = struct
       raise e
 
   let domain_config t ~uuid ~name ~kernel ~memory ?cmdline:(cmdline=None) ?scripts:(scripts=[]) ?nics:(nics=[]) ?disks:(disks=[]) () =
-    let c_info = Xenlight.Domain_create_info.({ (default !(t.context) ()) with
-                                                Xenlight.Domain_create_info.xl_type = Xenlight.DOMAIN_TYPE_PV;
-                                                uuid = (xen_uuid_of_uuidm uuid);
-                                                name = Some name;
-                                                run_hotplug_scripts = Some true;
-                                              }) in
-    let b_info = Xenlight.Domain_build_info.({ (default !(t.context) ~xl_type:Xenlight.DOMAIN_TYPE_PV ()) with
-                                               max_memkb = Int64.of_int memory;
-                                               target_memkb = Int64.of_int memory;
-                                             }) in
-    let b_info_xl_type =
-      match b_info.Xenlight.Domain_build_info.xl_type with
-      | Xenlight.Domain_build_info.Pv x -> x
-      | _ -> assert false in
-    let b_info = Xenlight.Domain_build_info.({ b_info with
-                                               xl_type = Pv { b_info_xl_type with
-                                                              kernel = Some kernel;
-                                                              cmdline = cmdline;
-                                                              ramdisk = None;
-                                                            };
-                                             }) in
+    let c_info =
+      let open Xenlight.Domain_create_info in
+      { (default !(t.context) ()) with
+        xl_type = Xenlight.DOMAIN_TYPE_PV;
+        uuid = xen_uuid_of_uuidm uuid;
+        name = Some name;
+        run_hotplug_scripts = Some true; }
+    in
+    let b_info =
+      let open Xenlight.Domain_build_info in
+      let default_info = default !(t.context) ~xl_type:Xenlight.DOMAIN_TYPE_PV () in
+      let xl_type = match default_info.xl_type with
+        | Pv pv -> Pv { pv with
+                        kernel = Some kernel;
+                        cmdline = cmdline;
+                        ramdisk = None; }
+        | _ -> failwith "wrong xl_type of build_info"
+      in
+      { default_info with
+        max_memkb = Int64.of_int memory;
+        target_memkb = Int64.of_int memory;
+        xl_type; }
+    in
     let nics =
+      let open Xenlight.Device_nic in
       let s = Array.of_list scripts in
-      let n = Array.of_list nics in
-      Array.init (Array.length n)
-        (fun i ->
-           let bridge = Some (Array.get n i) in
-           let script = begin
-             match s with
-             | [||] -> None
-             | scripts -> Some (Array.get scripts (i mod Array.length scripts))
-           end in
-           Xenlight.Device_nic.({ (default !(t.context) ()) with
-                                  Xenlight.Device_nic.mtu = 1500;
-                                  script;
-                                  bridge;
-                                })) in
+      let len = Array.length s in
+      List.mapi (fun i nic ->
+        let script =
+          if len = 0 then None
+          else Some (Array.get s (i mod len))
+        in
+        { (default !(t.context) ()) with
+          mtu = 1500;
+          script;
+          bridge = Some nic; }) nics
+      |> Array.of_list
+    in
     let disks =
-      let disks = Array.of_list disks in
-      Array.init (Array.length disks)
-        (fun i ->
-           let pdev_path,vdev = (Array.get disks i) in
-           let format = Xenlight.DISK_FORMAT_RAW in
-           let readwrite = 1 in
-           Xenlight.Device_disk.({ (default !(t.context) ()) with
-                                   pdev_path;
-                                   vdev ;
-                                   format ;
-                                   readwrite
-                                 })) in
-    Xenlight.Domain_config.({ (default !(t.context) ()) with
-                              c_info;
-                              b_info;
-                              nics;
-                              disks
-                            })
+      let open Xenlight.Device_disk in
+      List.map (fun (pdev_path,vdev) ->
+        { (default !(t.context) ()) with
+          pdev_path;
+          vdev;
+          format = Xenlight.DISK_FORMAT_RAW;
+          readwrite = 1; }) disks
+      |> Array.of_list
+    in
+    let open Xenlight.Domain_config in
+    { (default !(t.context) ()) with
+      c_info;
+      b_info;
+      nics;
+      disks; }
 
   (* Module signature implementations *)
   let get_state t uuid =
