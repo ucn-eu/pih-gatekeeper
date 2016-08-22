@@ -1,0 +1,5 @@
+#!/bin/bash -ex
+
+mirage clean || true
+mirage configure -t xen --no-opam --ip=10.0.0.254 --netmask=255.255.255.0 --gateways=10.0.0.1 --logs=ucn.gatekeeper:info
+mirage build

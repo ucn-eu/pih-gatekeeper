@@ -1,29 +1,145 @@
 open V1_LWT
 open Lwt
+open Result
 
 let log_src = Logs.Src.create "ucn.gatekeeper"
 module Log = (val Logs.src_log log_src : Logs.LOG)
+module Client = Cohttp_mirage.Client
+
 
 module Tbl = struct
-  type t = (X509.t, string list) Hashtbl.t
 
-  let init () : t = Hashtbl.create 7
+  module S = Data_store
 
-  let check t cert domain =
-    let l = Hashtbl.find t cert in
-    List.mem domain l
+  let approved_dir = ["approved"]
+  let rejected_dir = ["rejected"]
+  let pending_dir = ["pending"]
+  let approved_key id domain = approved_dir @ [id; domain]
+  let rejected_key id domain = rejected_dir @ [id; domain]
+  let pending_key id domain = pending_dir @ [id; domain]
 
-  let check_always_true t cert domain =
-    let key_id cert =
-      let len = 6 in
-      let buf = Buffer.create len in
-      X509.public_key cert
-      |> X509.key_id
-      |> fun cst -> Cstruct.sub cst 0 len
-      |> Cstruct.hexdump_to_buffer buf
-      |> fun () -> Buffer.contents buf in
-    Log.info (fun f -> f "check true: %s for %s" (key_id cert) domain);
-    true
+  let id_of_cert cert =
+    let buf = Buffer.create 40 in
+    X509.public_key cert
+    |> X509.key_id
+    |> Cstruct.hexdump_to_buffer buf
+    |> fun _ -> Buffer.contents buf
+
+  let approve_access s ?src id domain =
+    let old_key = pending_key id domain
+    and new_key = approved_key id domain in
+    S.remove s ?src old_key >>= function
+    | Error _ as e -> return e
+    | Ok () -> S.update s ?src new_key ""
+
+  let reject_access s ?src id domain =
+    let old_key = pending_key id domain
+    and new_key = rejected_key id domain in
+    S.remove s ?src old_key >>= function
+    | Error _ as e -> return e
+    | Ok () -> S.update s ?src new_key ""
+
+  let check s cert domain =
+    let id = id_of_cert cert in
+    let key = approved_key id domain in
+    let src = "gatekeeper", 0 in
+    S.read s ~src key >>= function
+    | Ok _ -> return_true
+    | Error _ as e ->
+       let key = pending_key id domain in
+       S.update s ~src key "" >>= function
+       | Error exn ->
+          Log.err (fun f -> f "check update pending: %s" (Printexc.to_string exn));
+          return_false
+       | Ok () -> return_false
+
+
+  let dispatch s ?src = function
+    | "list" :: parent ->
+       S.list s ?src ~parent () >>= (function
+       | Error _ as e -> return e
+       | Ok id_lst ->
+          let json = Ezjsonm.(list string id_lst |> to_string) in
+          return @@ Ok json)
+    | "remove" :: key ->
+       S.remove s ?src key >>= (function
+       | Error _ as e -> return e
+       | Ok () -> return @@ Ok "")
+    | op :: id :: [domain] ->
+       let fn =
+         if op = "approve" then approve_access
+         else if op = "reject" then reject_access
+         else failwith ("unknown operation: " ^ op) in
+       fn s ?src id domain >>= (function
+       | Error _ as e -> return e
+       | Ok () -> return @@ Ok "")
+    | _ as steps ->
+       let path = String.concat "/" steps in
+       let info = Printf.sprintf "dispatch unknown path: %s" path in
+       Log.err (fun f -> f "%s" info);
+       return @@ Error (Failure info)
+
+
+  let persist s head ctx uri =
+    let min = match !head with
+      | None -> None
+      | Some h -> Some [h] in
+    S.export ?min s >>= function
+    | Error e ->
+       Log.err (fun f -> f "gatekeeper persist: %s" (Printexc.to_string e));
+       return_unit
+    | Ok None -> return_unit
+    | Ok (Some (h, dump)) ->
+       let body = Cohttp_lwt_body.of_string dump in
+       Client.post ~ctx ~body uri >>= fun (res, _) ->
+       let status =
+         Cohttp.Response.status res
+         |> Cohttp.Code.string_of_status in
+       Log.info (fun f -> f "persist to %s: %s" (Uri.to_string uri) status);
+       head := (Some h);
+       return_unit
+
+
+  let init_with_dump ctx (host, port) path store =
+    let (/) d f = Printf.sprintf "%s/%s" d f in
+    let uri = Uri.make ~scheme:"http" ~host ~port () in
+    let list_uri = Uri.with_path uri (path / "list") in
+    Client.get ~ctx list_uri >>= fun (res, body) ->
+    let status = Cohttp.Response.status res in
+    if status <> `OK then begin
+      Log.err (fun f -> f "init_with_dump list: %s"
+        (Cohttp.Code.string_of_status status));
+      return_none end
+    else
+      Cohttp_lwt_body.to_string body >>= fun s ->
+      return Ezjsonm.(s |> from_string |> value |> get_list get_string)
+      >>= fun l ->
+      Log.info (fun f -> f "init with %d files" (List.length l));
+      let l =
+        List.map int_of_string l
+        |> List.sort compare |> List.map string_of_int in
+      Lwt_list.fold_left_s (fun acc file ->
+        let file_uri = Uri.with_path uri (path / file) in
+        Client.get ~ctx file_uri >>= fun (res, dump) ->
+        let s = Cohttp.Response.status res in
+        if s <> `OK then return_none else
+          Cohttp_lwt_body.to_string dump >>= fun dump ->
+          S.import dump store >>= function
+          | Error e ->
+             Log.err (fun f -> f "error init_with_dump: %s"
+               (Printexc.to_string e));
+             return_none
+          | Ok h ->
+             Log.info (fun f -> f "init_with_dump: import %s" file);
+             return_some h) None l
+
+
+  let init ctx endp ~time () =
+    let owner = "ucn.gatekeeper" in
+    S.make ~owner ~time () >>= fun s ->
+    init_with_dump ctx endp owner s >>= fun head ->
+    return (s, ref head)
+
 end
 
 
@@ -41,6 +157,7 @@ module Main
   let headers =
     Cohttp.Header.of_list [
       "Access-Control-Allow-Origin", "*"]
+  let empty_body = Cohttp_lwt_body.empty
 
   let peer_cert f = match TLS.epoch f with
     | `Error -> return None
@@ -99,27 +216,47 @@ module Main
          return (`Ok (ip, port))
 
 
-  let handler (jitsu, br_endp, tbl, ctx) (f, _) req body =
-    peer_cert f >>= function
-    | None -> Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
-    | Some cert ->
-      let ip, port, domain = query_params req in
-      if Tbl.check_always_true tbl cert domain then
-        wakeup_domain jitsu domain >>= function
-        | `Error _ -> Lwt.fail (Failure "wakeup_domain")
-        | `Ok dst_endp ->
-        insert_nat_rule ctx br_endp (ip, port) dst_endp >>= function
-        | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
-        | `Ok (ex_ip, ex_port) ->
-           let body =
-             let l = ["ip", ex_ip |> Ezjsonm.string;
-                      "port", string_of_int ex_port |> Ezjsonm.string] in
-             let obj = Ezjsonm.dict l in
-             Ezjsonm.to_string obj
-             |> Cohttp_lwt_body.of_string in
-           Http.respond ~status:`OK ~body ()
-      else
-        Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
+  let handler (jitsu, br_endp, (s, min, persist_uri), ctx) (f, _) req body =
+    let uri = Cohttp.Request.uri req in
+    let path = Uri.path uri in
+    let steps = Astring.String.cuts ~empty:false ~sep:"/" path in
+    match steps with
+    | "domain" :: _ ->
+       peer_cert f >>= (function
+       | None -> Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
+       | Some cert ->
+          let ip, port, domain = query_params req in
+          Tbl.check s cert domain >>= function
+          | true ->
+            wakeup_domain jitsu domain >>= (function
+            | `Error _ -> Lwt.fail (Failure "wakeup_domain")
+            | `Ok dst_endp ->
+               insert_nat_rule ctx br_endp (ip, port) dst_endp >>= function
+               | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
+               | `Ok (ex_ip, ex_port) ->
+                  let body =
+                    let l = ["ip", ex_ip |> Ezjsonm.string;
+                             "port", string_of_int ex_port |> Ezjsonm.string] in
+                    let obj = Ezjsonm.dict l in
+                    Ezjsonm.to_string obj
+                    |> Cohttp_lwt_body.of_string in
+                  Http.respond ~status:`OK ~body ())
+          | false ->
+             Http.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ())
+    | "op" :: steps ->
+       let src = None in
+       Tbl.dispatch s ?src steps >>= fun r ->
+       Tbl.persist s min ctx persist_uri >>= fun () ->
+       match r with
+       | Ok "" -> Http.respond ~headers ~status:`OK ~body:empty_body ()
+       | Ok json ->
+          let headers = Cohttp.Header.add headers
+            "content-type" "application/json" in
+          let body = Cohttp_lwt_body.of_string json in
+          Http.respond ~headers ~status:`OK ~body ()
+       | Error exn ->
+          let body = Printexc.to_string exn in
+          Http.respond_error ~headers ~status:`Internal_server_error ~body ()
 
 
   let upgrade conf tls_conf f =
@@ -134,6 +271,10 @@ module Main
        let t = Http.make ~callback:(handler conf) () in
        Http.(listen t f)
 
+  let time () = Clock.(
+    let t = time () |> gmtime in
+    Printf.sprintf "%d:%d:%d:%d:%d:%d"
+      t.tm_year t.tm_mon t.tm_mday t.tm_hour t.tm_min t.tm_sec)
 
   let tls_init kv =
     let module X509 = Tls_mirage.X509(Keys)(Clock) in
@@ -156,8 +297,14 @@ module Main
     | `Error _ -> Lwt.fail (Failure "can't start pih-bridge")
     | `Ok br_endp ->
 
-    let tbl = Tbl.init () in
+    let persist_host = Key_gen.persist_host () |> Ipaddr.V4.to_string in
+    let persist_port = Key_gen.persist_port () in
+    let persist_uri = Uri.make ~scheme:"http" ~host:persist_host ~port:persist_port ~path:"ucn.gatekeeper" () in
+
     let ctx = Client.ctx resolver conduit in
-    Stack.listen_tcpv4 stack ~port:4433 (upgrade (jitsu, br_endp, tbl, ctx) tls_conf);
+    Tbl.init ctx (persist_host, persist_port) ~time () >>= fun (s, min) ->
+
+    let tbl = s, min, persist_uri in
+    Stack.listen_tcpv4 stack ~port:8443 (upgrade (jitsu, br_endp, tbl, ctx) tls_conf);
     Stack.listen stack
 end
