@@ -26,7 +26,6 @@ let conduit_impl = conduit_direct stack
 
 let tls = crunch "xen_cert"
 
-
 let main =
   let deps = [abstract nocrypto] in
   foreign ~deps "Gatekeeper.Main" (stackv4 @-> resolver @-> conduit @-> kv_ro @-> clock @-> job)
