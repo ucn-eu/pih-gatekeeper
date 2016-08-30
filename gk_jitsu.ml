@@ -148,8 +148,7 @@ module Make
     let fn = Vm_backend.configure_vm t.vm_backend in
     or_vm_backend_error "Unable to configure VM" fn vm_config >>= fun vm_uuid ->
     Storage_backend.add_vm t.storage ~vm_uuid ~vm_ip ~vm_stop_mode ~response_delay ~wait_for_key ~use_synjitsu ~vm_config >>= fun () ->
-    Storage_backend.add_vm_domain t.storage ~vm_uuid ~domain_name ~domain_ttl >>= fun () ->
-    Storage_backend.set_last_request_timestamp t.storage ~vm_uuid ~domain_name (t.time ())
+    Storage_backend.add_vm_domain t.storage ~vm_uuid ~domain_name ~domain_ttl
 
 
   (* iterate through t.name_table and stop VMs that haven't received
@@ -186,6 +185,20 @@ module Make
             Lwt.return (Some vm_uuid) (* VM has no unexpired DNS domains, can be terminated *)
       ) vm_uuid_list >>= fun expired_vms ->
     Lwt_list.iter_s (stop_vm t) expired_vms (* Stop expired VMs *)
+
+
+  let uuid_of_name t domain_name =
+    Storage_backend.get_vm_list t.storage >>= fun vm_uuid_list ->
+    Lwt_list.filter_s (fun uuid ->
+      get_vm_name t uuid >>= fun name ->
+      if name = domain_name then return_true
+      else return_false) vm_uuid_list >>= function
+    | [] ->
+       let m = Printf.sprintf "no vm's name is %s" domain_name in
+       Log.err (fun f -> f "%s" m);
+       return_none
+    | vm_uuid :: _ ->
+       return_some vm_uuid
 end
 
 
@@ -241,21 +254,14 @@ let init time timeout conf =
   | `Ok backend_t ->
      Jitsu.create backend_t time () >>= fun t ->
      Lwt_list.iter_s (add_with_config t) conf >>= fun () ->
-     Lwt.async (fun () -> maintenance_thread t timeout);
+     (*Lwt.async (fun () -> maintenance_thread t timeout);*)
      return t
 
 
 let start t domain_name =
-  Storage_backend.get_vm_list t.Jitsu.storage >>= fun vm_uuid_list ->
-  Lwt_list.filter_s (fun uuid ->
-    Jitsu.get_vm_name t uuid >>= fun name ->
-    if name = domain_name then return_true
-    else return_false) vm_uuid_list >>= function
-  | [] ->
-     let m = Printf.sprintf "no vm's name is %s" domain_name in
-     Log.err (fun f -> f "%s" m);
-     Lwt.fail (Failure m)
-  | vm_uuid :: _ ->
+  Jitsu.uuid_of_name t domain_name >>= function
+  | None -> Lwt.fail (Failure ("no such domain name " ^ domain_name))
+  | Some vm_uuid ->
      Jitsu.start_vm t vm_uuid >>= fun () ->
      Storage_backend.get_ip t.Jitsu.storage ~vm_uuid >>= function
      | None ->
@@ -269,3 +275,13 @@ let start t domain_name =
        else Hashtbl.find tbl "port" |> int_of_string in
      return port >>= fun port ->
      return (Ipaddr.V4.to_string ip, port)
+
+
+let get_state t domain_name =
+  Jitsu.uuid_of_name t domain_name >>= function
+  | None -> return "ERR: no such domain"
+  | Some vm_uuid ->
+     Jitsu.get_vm_state t vm_uuid
+     >|= Gk_vm_state.to_string
+
+
