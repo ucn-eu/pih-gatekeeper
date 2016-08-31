@@ -45,26 +45,99 @@ module Tbl = struct
     | Error _ as e -> return e
     | Ok () -> S.create s ?src new_key ""
 
-  let check s cert domain =
-    let id = id_of_cert cert in
+  let check s id domain =
     let key = approved_key id domain in
+    let parent = key |> List.rev |> List.tl |> List.rev in
     let src = "gatekeeper", 0 in
-    S.read s ~src key >>= function
-    | Ok _ -> return_true
+    S.list s ~src ~parent () >>= function
+    | Ok domains ->
+       if List.mem domain domains then return_true
+       else
+         let key = rejected_key id domain in
+         let parent = key |> List.rev |> List.tl |> List.rev in
+         S.list s ~src ~parent () >>= (function
+         | Ok domains ->
+            if List.mem domain domains then return_false
+            else
+              let key = pending_key id domain in
+              S.create s ~src key "" >>= (function
+              | Ok () -> return_false
+              | Error exn ->
+                 Log.err (fun f -> f "check update pending: %s" (Printexc.to_string exn));
+                 return_false)
+         | Error exn ->
+            Log.err (fun f -> f "check list rejected: %s" (Printexc.to_string exn));
+            return_false)
+    | Error exn ->
+       Log.err (fun f -> f "check list approved: %s" (Printexc.to_string exn));
+       return_false
+
+  (* domain has to be accessible by cert  *)
+  let read_bridge_endp s id domain src =
+    let key = approved_key id domain @ [src] in
+    S.read s key >>= function
+    | Ok endp -> return endp
+    | Error exn ->
+       Log.warn (fun f -> f "read_bridge_endp %s %s" id domain);
+       return ""
+
+  let update_bridge_endp s id domain (src, dst) =
+    let key = approved_key id domain @ [src] in
+    S.update s key dst >>= function
+    | Ok () -> return_unit
+    | Error exn ->
+       Log.err (fun f -> f "update_bridge_endp %s %s %s_%s" id domain src dst);
+       return_unit
+
+  let remove_entry (ip, port) ctx s id domain =
+    let send_request src dst =
+      let src_ip, src_port =
+        match Astring.String.cut ~sep:":" src with
+        | Some (ip, port) -> ip, port |> int_of_string
+        | None -> failwith ("non parseable endpoint: " ^ src)
+      in
+      let dst_ip, dst_port =
+        match Astring.String.cut ~sep:":" dst with
+        | Some (ip, port) -> ip, port |> int_of_string
+        | None -> failwith ("non parseable endpoint: " ^ dst)
+      in
+      let uri = Uri.make ~scheme:"http" ~host:ip ~port ~path:"remove" () in
+      let body = Ezjsonm.(
+        let l = [
+          "src_ip", src_ip |> string;
+          "src_port", src_port |> int;
+          "dst_ip", dst_ip |> string;
+          "dst_port", dst_port |> int] in
+        dict l |> to_string
+        |> Cohttp_lwt_body.of_string) in
+      Client.post ~ctx ~body uri>>= fun (res, _) ->
+      let status = Cohttp.Response.status res in
+      if status = `OK then Log.info (fun f -> f "remove entry %s_%s OK" src dst)
+      else Log.warn (fun f -> f "remove entry %s_%s failed" src dst);
+      return_unit
+    in
+
+    let parent = approved_key id domain in
+    S.list s ~parent () >>= function
     | Error _ ->
-       let key = rejected_key id domain in
-       S.read s ~src key >>= function
-       | Ok _ -> return_false
-       | Error _ ->
-          let key = pending_key id domain in
-          S.create s ~src key "" >>= function
-          | Error exn ->
-             Log.err (fun f -> f "check update pending: %s" (Printexc.to_string exn));
-             return_false
-          | Ok () -> return_false
+       Log.err (fun f -> f "remove entry failed: %s %s" id domain);
+       return_unit
+    | Ok src_lst ->
+       if List.length src_lst = 0 then begin
+         Log.warn (fun f -> f "remove entry: zero src found for %s %s" id domain);
+         return_unit end
+       else
+         let src = List.hd src_lst in
+         let key = parent @ [src] in
+         S.read s key >>= function
+         | Error _ ->
+            Log.err (fun f -> f "read entry dst failed: %s %s %s" id domain src);
+            return_unit
+         | Ok dst ->
+            send_request src dst
 
 
-  let dispatch s ?src = function
+  let dispatch (br_endp, s, ctx) ?src = function
     | "list" :: parent ->
        S.list s ?src ~parent () >>= (function
        | Error _ as e -> return e
@@ -72,13 +145,15 @@ module Tbl = struct
           let json = Ezjsonm.(list string id_lst |> to_string) in
           return @@ Ok json)
     | "remove" :: c :: id :: [domain] ->
-       let key =
-         (if c = "approved" then approved_key
-         else if c = "rejected" then rejected_key
-         else if c = "pending" then pending_key
-         else failwith ("no such category: " ^ c))
-           id domain in
-       S.remove s ?src key >>= (function
+       (if c = "approved" then remove_entry br_endp ctx s id domain
+       else return_unit) >>= fun () ->
+       let key_fn, rm_fn =
+         (if c = "approved" then approved_key, S.remove_rec
+         else if c = "rejected" then rejected_key, S.remove
+         else if c = "pending" then pending_key, S.remove
+         else failwith ("no such category: " ^ c)) in
+       let key = key_fn id domain in
+       rm_fn s ?src key >>= (function
        | Error _ as e -> return e
        | Ok () -> return @@ Ok "")
     | op :: id :: [domain] ->
@@ -96,6 +171,7 @@ module Tbl = struct
        return @@ Error (Failure info)
 
 
+  (*
   let persist s head ctx uri =
     let min = match !head with
       | None -> None
@@ -147,14 +223,13 @@ module Tbl = struct
              return_none
           | Ok h ->
              Log.info (fun f -> f "init_with_dump: import %s" file);
-             return_some h) None l
+             return_some h) None l *)
 
 
-  let init ctx endp ~time () =
+  let init remote_conf ~time () =
     let owner = "ucn.gatekeeper" in
-    S.make ~owner ~time () >>= fun s ->
-    init_with_dump ctx endp owner s >>= fun head ->
-    return (s, ref head)
+    let backend = `Http (remote_conf, owner) in
+    S.make ~backend ~time ()
 
 end
 
@@ -233,7 +308,7 @@ module Main
          return (`Ok (ip, port))
 
 
-  let https_handler (jitsu, br_endp, (s, min, persist_uri), ctx) (f, _) req body =
+  let https_callback (jitsu, br_endp, s, ctx) (f, _) req body =
     let uri = Cohttp.Request.uri req in
     let path = Uri.path uri in
     let steps = Astring.String.cuts ~empty:false ~sep:"/" path in
@@ -242,24 +317,43 @@ module Main
        peer_cert f >>= (function
        | None -> Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
        | Some cert ->
+          let id = Tbl.id_of_cert cert in
           let ip, port, domain = query_params req in
-          Tbl.check s cert domain >>= function
+          let src_endp = Printf.sprintf "%s:%d" ip port in
+          Tbl.check s id domain >>= function
           | true ->
-            wakeup_domain jitsu domain >>= (function
-            | `Error _ -> Lwt.fail (Failure "wakeup_domain")
-            | `Ok dst_endp ->
+             Tbl.read_bridge_endp s id domain src_endp >>= fun endp ->
+             if endp = "" then
+               wakeup_domain jitsu domain >>= (function
+               | `Error _ -> Lwt.fail (Failure "wakeup_domain")
+               | `Ok dst_endp ->
                insert_nat_rule ctx br_endp (ip, port) dst_endp >>= function
                | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
                | `Ok (ex_ip, ex_port) ->
+                  let dst_endp = Printf.sprintf "%s:%d" ex_ip ex_port in
+                  Tbl.update_bridge_endp s id domain (src_endp, dst_endp) >>= fun () ->
                   let body =
-                    let l = ["ip", ex_ip |> Ezjsonm.string;
-                             "port", string_of_int ex_port |> Ezjsonm.string] in
+                    let l =
+                      ["ip", ex_ip |> Ezjsonm.string;
+                       "port", string_of_int ex_port |> Ezjsonm.string] in
                     let obj = Ezjsonm.dict l in
                     Ezjsonm.to_string obj
                     |> Cohttp_lwt_body.of_string in
                   Https.respond ~status:`OK ~body ())
+             else
+               let ex_ip, ex_port =
+                 match Astring.String.cut ~sep:":" endp with
+                 | Some (ip, port) -> ip, port
+                 | None -> failwith ("non-parsable endpoint: " ^ endp) in
+               let body =
+                 let l =
+                   ["ip", ex_ip |> Ezjsonm.string;
+                    "port", ex_port |> Ezjsonm.string] in
+                 let obj = Ezjsonm.dict l in
+                 Ezjsonm.to_string obj
+                 |> Cohttp_lwt_body.of_string in
+               Https.respond ~status:`OK ~body ()
           | false ->
-             Tbl.persist s min ctx persist_uri >>= fun () ->
              Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ())
 
 
@@ -272,21 +366,20 @@ module Main
        Log.err (fun f -> f "upgrade: EOF");
        return_unit
     | `Ok f ->
-       let t = Https.make ~callback:(https_handler conf) () in
+       let t = Https.make ~callback:(https_callback conf) () in
        Https.(listen t f)
 
 
   let http_callback conf f =
-    let handler ((s, min, persist_uri), ctx) _ req body =
+    let handler conf _ req body =
       let uri = Cohttp.Request.uri req in
       let path = Uri.path uri in
       let steps = Astring.String.cuts ~empty:false ~sep:"/" path in
       match steps with
       | "op" :: steps ->
          let src = None in
-         Tbl.dispatch s ?src steps >>= fun r ->
-         Tbl.persist s min ctx persist_uri >>= fun () ->
-         match r with
+         Tbl.dispatch conf ?src steps >>= fun r ->
+         (match r with
          | Ok "" -> Http.respond ~headers ~status:`OK ~body:empty_body ()
          | Ok json ->
             let headers = Cohttp.Header.add headers
@@ -295,7 +388,10 @@ module Main
             Http.respond ~headers ~status:`OK ~body ()
          | Error exn ->
             let body = Printexc.to_string exn in
-            Http.respond_error ~headers ~status:`Internal_server_error ~body () in
+            Http.respond_error ~headers ~status:`Internal_server_error ~body ())
+      | _ ->
+         Log.err (fun f -> f "http_callback: unknown steps %s" path);
+         Http.respond_error ~headers ~status:`Not_found ~body:"" () in
     let callback = handler conf in
     let t = Http.make ~callback () in
     Http.listen t f
@@ -329,13 +425,12 @@ module Main
 
     let persist_host = Key_gen.persist_host () |> Ipaddr.V4.to_string in
     let persist_port = Key_gen.persist_port () in
-    let persist_uri = Uri.make ~scheme:"http" ~host:persist_host ~port:persist_port ~path:"ucn.gatekeeper" () in
+    let persist_uri = Uri.make ~scheme:"http" ~host:persist_host ~port:persist_port () in
+
+    Tbl.init (resolver, conduit, persist_uri) ~time () >>= fun tbl ->
 
     let ctx = Client.ctx resolver conduit in
-    Tbl.init ctx (persist_host, persist_port) ~time () >>= fun (s, min) ->
-
-    let tbl = s, min, persist_uri in
     Stack.listen_tcpv4 stack ~port:8443 (upgrade (jitsu, br_endp, tbl, ctx) tls_conf);
-    Stack.listen_tcpv4 stack ~port:8080 (http_callback (tbl, ctx));
+    Stack.listen_tcpv4 stack ~port:8080 (http_callback (br_endp, tbl, ctx));
     Stack.listen stack
 end
