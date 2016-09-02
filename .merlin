@@ -6,6 +6,12 @@ PKG mirage-xen
 PKG irmin.mirage
 PKG uuidm
 PKG vchan
+PKG xenstore
+PKG xenstore_transport
+PKG xenctrl
+PKG xenlight
+PKG pih-store
 
 S .
 B _build
+B _mbuild
