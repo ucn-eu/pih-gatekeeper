@@ -91,9 +91,9 @@ module Tbl = struct
 
   let remove_entry (ip, port) ctx s id domain =
     let send_request src dst =
-      let src_ip, src_port =
+      let src_ip =
         match Astring.String.cut ~sep:":" src with
-        | Some (ip, port) -> ip, port |> int_of_string
+        | Some (ip, _) -> ip
         | None -> failwith ("non parseable endpoint: " ^ src)
       in
       let dst_ip, dst_port =
@@ -105,7 +105,6 @@ module Tbl = struct
       let body = Ezjsonm.(
         let l = [
           "src_ip", src_ip |> string;
-          "src_port", src_port |> int;
           "dst_ip", dst_ip |> string;
           "dst_port", dst_port |> int] in
         dict l |> to_string
@@ -265,9 +264,8 @@ module Main
     let uri = Cohttp.Request.uri req in
     let params = Uri.query uri in
     let ip = List.assoc "ip" params |> List.hd in
-    let port = List.assoc "port" params |> List.hd |> int_of_string in
     let domain = List.assoc "domain" params |> List.hd in
-    (ip, port, domain)
+    (ip, domain)
 
 
   (* start NAT and coressponding unikernels for [domain] *)
@@ -278,10 +276,9 @@ module Main
         (function exn -> return @@ `Error ())
 
 
-  let insert_nat_rule ctx (ip, port) req_endp dst_endp =
+  let insert_nat_rule ctx (ip, port) src_ip dst_endp =
     let open Ezjsonm in
-    let l = ["ip", fst req_endp |> string;
-             "port", snd req_endp |> int;
+    let l = ["ip", src_ip |> string;
              "dst_ip", fst dst_endp |> string;
              "dst_port", snd dst_endp |> int] in
     let body =
@@ -318,8 +315,8 @@ module Main
        | None -> Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
        | Some cert ->
           let id = Tbl.id_of_cert cert in
-          let ip, port, domain = query_params req in
-          let src_endp = Printf.sprintf "%s:%d" ip port in
+          let ip, domain = query_params req in
+          let src_endp = Printf.sprintf "%s:?" ip in
           Tbl.check s id domain >>= function
           | true ->
              Tbl.read_bridge_endp s id domain src_endp >>= fun endp ->
@@ -327,7 +324,7 @@ module Main
                wakeup_domain jitsu domain >>= (function
                | `Error _ -> Lwt.fail (Failure "wakeup_domain")
                | `Ok dst_endp ->
-               insert_nat_rule ctx br_endp (ip, port) dst_endp >>= function
+               insert_nat_rule ctx br_endp ip dst_endp >>= function
                | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
                | `Ok (ex_ip, ex_port) ->
                   let dst_endp = Printf.sprintf "%s:%d" ex_ip ex_port in
