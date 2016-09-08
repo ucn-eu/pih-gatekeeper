@@ -3,12 +3,10 @@ open Mirage
 let addr = Ipaddr.V4.of_string_exn
 
 let persist_host =
-  let default = addr "10.0.0.1" in
-  Key.create "persist-host" @@ Key.Arg.opt Key.Arg.ipv4 default (Key.Arg.info ["persist-host"])
+  Key.create "persist-host" @@ Key.Arg.required Key.Arg.ipv4 (Key.Arg.info ["persist-host"])
 
 let persist_port =
-  let default = 10000 in
-  Key.create "persist-port" @@ Key.Arg.opt Key.Arg.int default (Key.Arg.info ["persist-port"])
+  Key.create "persist-port" @@ Key.Arg.required Key.Arg.int (Key.Arg.info ["persist-port"])
 
 let keys = Key.[
   abstract persist_host;
