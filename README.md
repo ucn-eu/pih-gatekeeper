@@ -60,7 +60,14 @@ After you have every part in place, to build and run the gatekeeper, you can do:
 ./build.sh
 sudo xl create -c gatekeeper.xl
 ```
-### Protocol
+### Communication Protocol
+Basically, there are three steps when some external client wants to access the data through the gatekeeper and behind the bridge. Assuming the gatekeeper has an ip address of `10.0.0.254` and listens on the port `8443`, and the data it wants to access are served at the domain `review`, the very **first** step would be issuing a request to
+```
+https://10.0.0.254:8443/domain
+```
+with the query string: `ip=10.0.0.1&domain=review`. This is to say that as an external client, I want to access the data within `review`, and I would issue requests from the ip address `10.0.0.1`later when accessing the data. And please note that this has to be an tls session with client certificate attached, the owner of the data will approve/disallow this request based on it. And **secondly**, the owner has to make the decision about this request, we have [a web interface] to do this in the demo, this part has no concern as with the client. Then the **third** step would be the client issuing the same request to the same endpoint again. Without the owner's approval, the request will return `401 unauthorized`, however if the data's owner approves this request, it will return `200 OK` and a json object in the body specifying the endpoint that the client could contact to access the data in the store. The object would have two fields `ip` and `port` respectively. This endpoint is on the external interface of the [pih-bridge], it will translate the traffic automatically for you if you have the right to access the data. Different domains could have different REST APIs when the client wants to manipulate(reading/writing/listing/deleting) the data after being given the endpoint on the bridge, but the procedures of client authentication before that are the same for all the domains and all the clients.
+
+
 
 [pih-bridge]:https://github.com/ucn-eu/pih-bridge
 [the other unikernels]:https://github.com/sevenEng/pih-store-instance
@@ -68,3 +75,4 @@ sudo xl create -c gatekeeper.xl
 [vchan]:https://github.com/mirage/ocaml-vchan
 [config.ml]:https://github.com/sevenEng/pih-gatekeeper/blob/master/config.ml#L25
 [build.sh]:https://github.com/sevenEng/pih-gatekeeper/blob/master/build.sh#L4
+[a web interface]:https://github.com/sevenEng/ucn-demo
