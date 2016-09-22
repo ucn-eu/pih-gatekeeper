@@ -26,7 +26,7 @@ let tls = crunch "xen_cert"
 
 let main =
   let deps = [abstract nocrypto] in
-  foreign ~deps "Gatekeeper.Main" (stackv4 @-> resolver @-> conduit @-> kv_ro @-> clock @-> job)
+  foreign ~deps "Gatekeeper.Main" (stackv4 @-> resolver @-> conduit @-> kv_ro @-> pclock @-> job)
 
 
 let () =
@@ -37,11 +37,13 @@ let () =
       "irmin.mirage";
       "uuidm";
       "logs";
+      "ptime";
       "vchan";
       "vchan.xen";
-      "pih-store"
+      "pih-store";
+      "ppx_sexp_conv";
     ] in
   register ~libraries ~keys "gatekeeper" [
-    main $ stack $ resolver_impl $ conduit_impl $ tls $ default_clock;
+    main $ stack $ resolver_impl $ conduit_impl $ tls $ default_posix_clock;
   ]
 

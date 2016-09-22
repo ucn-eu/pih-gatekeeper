@@ -238,7 +238,7 @@ module Main
          (Resolver: Resolver_lwt.S)
          (Conduit: Conduit_mirage.S)
          (Keys: KV_RO)
-         (Clock: V1.CLOCK)= struct
+         (Clock: V1.PCLOCK)= struct
 
   module Client = Cohttp_mirage.Client
   module TLS = Tls_mirage.Make(Stack.TCPV4)
@@ -394,15 +394,10 @@ module Main
     Http.listen t f
 
 
-  let time () = Clock.(
-    let t = time () |> gmtime in
-    Printf.sprintf "%d:%d:%d:%d:%d:%d"
-      t.tm_year t.tm_mon t.tm_mday t.tm_hour t.tm_min t.tm_sec)
-
-  let tls_init kv =
+  let tls_init kv pclock =
     let module X509 = Tls_mirage.X509(Keys)(Clock) in
     X509.certificate kv `Default >>= fun cert ->
-    X509.authenticator kv `CAs >>= fun authenticator ->
+    X509.authenticator kv pclock `CAs >>= fun authenticator ->
     let conf = Tls.Config.server ~certificates:(`Single cert) ~authenticator () in
     Lwt.return conf
 
@@ -411,11 +406,16 @@ module Main
     | exn -> Log.err (fun f -> f "async_hook %s" (Printexc.to_string exn))
 
 
-  let start stack resolver conduit kv _ _ =
+  let start stack resolver conduit kv pclock _ =
     let () = Lwt.async_exception_hook := async_hook in
-    tls_init kv >>= fun tls_conf ->
+    tls_init kv pclock >>= fun tls_conf ->
 
-    Gk_jitsu.init Clock.time 200.0 Vm_configs.conf >>= fun jitsu ->
+    let time_to_string () =
+      Clock.now_d_ps pclock |> Ptime.v |> Ptime.to_rfc3339 ~space:true in
+    let time_to_float () =
+      Clock.now_d_ps pclock |> Ptime.v |> Ptime.to_float_s in
+
+    Gk_jitsu.init time_to_float 200.0 Vm_configs.conf >>= fun jitsu ->
     wakeup_domain jitsu "bridge" >>= function
     | `Error _ -> Lwt.fail (Failure "can't start pih-bridge")
     | `Ok br_endp ->
@@ -424,7 +424,7 @@ module Main
     let persist_port = Key_gen.persist_port () in
     let persist_uri = Uri.make ~scheme:"http" ~host:persist_host ~port:persist_port () in
 
-    Tbl.init (resolver, conduit, persist_uri) ~time () >>= fun tbl ->
+    Tbl.init (resolver, conduit, persist_uri) ~time:time_to_string () >>= fun tbl ->
 
     let ctx = Client.ctx resolver conduit in
     Stack.listen_tcpv4 stack ~port:8443 (upgrade (jitsu, br_endp, tbl, ctx) tls_conf);

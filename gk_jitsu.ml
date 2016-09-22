@@ -211,7 +211,7 @@ module Jitsu = Make(Vm_backend)(Storage_backend)
 
 
 let rec maintenance_thread t timeout =
-  OS.Time.sleep timeout >>= fun () ->
+  OS.Time.sleep_ns timeout >>= fun () ->
   or_warn_lwt "Unable to stop expired VMs" (fun () -> Jitsu.stop_expired_vms t) >>= fun () ->
   maintenance_thread t timeout
 
