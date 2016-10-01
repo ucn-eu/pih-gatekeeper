@@ -30,20 +30,23 @@ let main =
 
 
 let () =
-  let libraries =
-    [ "tls.mirage";
-      "mirage-http";
-      "mirage-xen";
-      "irmin.mirage";
-      "uuidm";
-      "logs";
-      "ptime";
+  let packages =
+    [ "uuidm";
+      "git";
+      "mirage-git";
+      "irmin";
       "vchan";
-      "vchan.xen";
+      "tls"; ] in
+  let libraries =
+    [ "uuidm";
+      "irmin";
+      "irmin.git";
+      "mirage-http";
       "pih-store";
+      "tls.mirage";
       "ppx_sexp_conv";
-    ] in
-  register ~libraries ~keys "gatekeeper" [
+      "vchan.xen" ] in
+  register ~keys ~packages ~libraries "gatekeeper" [
     main $ stack $ resolver_impl $ conduit_impl $ tls $ default_posix_clock;
   ]
 
