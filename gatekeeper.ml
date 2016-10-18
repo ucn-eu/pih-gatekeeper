@@ -305,20 +305,47 @@ module Main
          return (`Ok (ip, port))
 
 
-  let https_callback (jitsu, br_endp, s, ctx) (f, _) req body =
+  let log_tbl = Hashtbl.create 13
+  let counter = ref 0
+  let get_count () =
+    string_of_int @@ !counter
+
+  let start_timer clock =
+    let cnt = get_count () in
+    let _, start_time = Clock.now_d_ps clock in
+    Hashtbl.add log_tbl cnt ["start", start_time]
+
+  let insert_checkpoint clock info =
+    let cnt = get_count () in
+    let _, checkpoint = Clock.now_d_ps clock in
+    let acc = Hashtbl.find log_tbl cnt in
+    Hashtbl.replace log_tbl cnt ((info, checkpoint) :: acc)
+
+  let stop_timer clock info =
+    let _, stop_time = Clock.now_d_ps clock in
+    let cnt = get_count () in
+    let () = incr counter in
+    let acc = Hashtbl.find log_tbl cnt in
+    Hashtbl.replace log_tbl cnt ((info, stop_time) :: acc)
+
+
+  let https_callback (jitsu, br_endp, s, ctx, pclock) (f, _) req body =
     let uri = Cohttp.Request.uri req in
     let path = Uri.path uri in
     let steps = Astring.String.cuts ~empty:false ~sep:"/" path in
     match steps with
     | "domain" :: _ ->
+       let () = start_timer pclock in
        peer_cert f >>= (function
        | None -> Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
        | Some cert ->
+          let () = insert_checkpoint pclock "cert" in
           let id = Tbl.id_of_cert cert in
           let ip, domain = query_params req in
           let src_endp = Printf.sprintf "%s:?" ip in
           Tbl.check s id domain >>= function
           | true ->
+             let () = insert_checkpoint pclock "check" in
              Tbl.read_bridge_endp s id domain src_endp >>= fun endp ->
              if endp = "" then
                wakeup_domain jitsu domain >>= (function
@@ -336,6 +363,7 @@ module Main
                     let obj = Ezjsonm.dict l in
                     Ezjsonm.to_string obj
                     |> Cohttp_lwt_body.of_string in
+                  let () = stop_timer pclock "insert" in
                   Https.respond ~status:`OK ~body ())
              else
                let ex_ip, ex_port =
@@ -349,8 +377,11 @@ module Main
                  let obj = Ezjsonm.dict l in
                  Ezjsonm.to_string obj
                  |> Cohttp_lwt_body.of_string in
+               let () = stop_timer pclock "conf" in
                Https.respond ~status:`OK ~body ()
           | false ->
+             let info = "unauthorized" in
+             let () = stop_timer pclock info in
              Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ())
 
 
@@ -386,6 +417,19 @@ module Main
          | Error exn ->
             let body = Printexc.to_string exn in
             Http.respond_error ~headers ~status:`Internal_server_error ~body ())
+      | ["log"] ->
+         let logs =
+           Hashtbl.fold (fun k lst acc -> (k, lst) :: acc) log_tbl [] in
+         let res = Ezjsonm.(
+           let c = 1_000_000L in
+           let to_dict l =
+             List.map (fun (info, t) -> info, string Int64.(div t c |> to_string)) l
+             |> dict
+             |> value in
+           dict @@ List.map (fun (cnt, e) -> cnt, to_dict e) logs
+           |> to_string) in
+         let body = Cohttp_lwt_body.of_string res in
+         Http.respond ~headers ~status:`OK ~body ()
       | _ ->
          Log.err (fun f -> f "http_callback: unknown steps %s" path);
          Http.respond_error ~headers ~status:`Not_found ~body:"" () in
@@ -427,7 +471,7 @@ module Main
     Tbl.init (resolver, conduit, persist_uri) ~time:time_to_string () >>= fun tbl ->
 
     let ctx = Client.ctx resolver conduit in
-    Stack.listen_tcpv4 stack ~port:8443 (upgrade (jitsu, br_endp, tbl, ctx) tls_conf);
+    Stack.listen_tcpv4 stack ~port:8443 (upgrade (jitsu, br_endp, tbl, ctx, pclock) tls_conf);
     Stack.listen_tcpv4 stack ~port:8080 (http_callback (br_endp, tbl, ctx));
     Stack.listen stack
 end
