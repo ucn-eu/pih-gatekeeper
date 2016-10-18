@@ -276,15 +276,15 @@ module Main
         (function exn -> return @@ `Error ())
 
 
-  let insert_nat_rule ctx (ip, port) src_ip dst_endp =
+  let nat_rule op ctx (ip, port) src_ip dst_endp =
     let open Ezjsonm in
-    let l = ["ip", src_ip |> string;
+    let l = ["src_ip", src_ip |> string;
              "dst_ip", fst dst_endp |> string;
              "dst_port", snd dst_endp |> int] in
     let body =
       dict l |> to_string
       |> Cohttp_lwt_body.of_string in
-    let uri = Uri.make ~scheme:"http" ~host:ip ~port ~path:"insert" () in
+    let uri = Uri.make ~scheme:"http" ~host:ip ~port ~path:op () in
 
     Log.info (fun f -> f "try to insert %s to %s" (dict l |> to_string) (Uri.to_string uri));
     Client.post ~ctx ~body ~headers uri >>= fun (res, body) ->
@@ -294,7 +294,7 @@ module Main
       Cohttp_lwt_body.to_string body >>= fun b ->
       Log.err (fun f -> f "insert_nat_rule %s" b);
       return (`Error ()) end
-    else
+    else if op = "insert" then
       Cohttp_lwt_body.to_string body >>= fun str ->
       from_string str
       |> value
@@ -303,6 +303,7 @@ module Main
          let ip = List.assoc "ip" obj |> get_string in
          let port = List.assoc "port" obj |> get_int in
          return (`Ok (ip, port))
+    else return @@ `Ok ("", 0)
 
 
   let log_tbl = Hashtbl.create 13
@@ -334,7 +335,7 @@ module Main
     let path = Uri.path uri in
     let steps = Astring.String.cuts ~empty:false ~sep:"/" path in
     match steps with
-    | "domain" :: _ ->
+    | "domain" :: tl ->
        let () = start_timer pclock in
        peer_cert f >>= (function
        | None -> Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ()
@@ -343,46 +344,51 @@ module Main
           let id = Tbl.id_of_cert cert in
           let ip, domain = query_params req in
           let src_endp = Printf.sprintf "%s:?" ip in
-          Tbl.check s id domain >>= function
-          | true ->
-             let () = insert_checkpoint pclock "check" in
-             Tbl.read_bridge_endp s id domain src_endp >>= fun endp ->
-             if endp = "" then
-               wakeup_domain jitsu domain >>= (function
-               | `Error _ -> Lwt.fail (Failure "wakeup_domain")
-               | `Ok dst_endp ->
-               insert_nat_rule ctx br_endp ip dst_endp >>= function
-               | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
-               | `Ok (ex_ip, ex_port) ->
-                  let dst_endp = Printf.sprintf "%s:%d" ex_ip ex_port in
-                  Tbl.update_bridge_endp s id domain (src_endp, dst_endp) >>= fun () ->
+          match tl with
+          | "remove" :: _ ->
+             let dst_endp = "192.168.252.11", 8443 in
+             nat_rule "remove" ctx br_endp ip dst_endp >>= (function
+             | `Error _ -> Lwt.fail (Failure "remove_nat_rule")
+             | `Ok _ -> Https.respond ~status:`OK ~body:Cohttp_lwt_body.empty ())
+          | _ ->
+             Tbl.check s id domain >>= function
+             | true ->
+                let () = insert_checkpoint pclock "check" in
+                Tbl.read_bridge_endp s id domain src_endp >>= fun endp ->
+                if endp = "" then
+                  let dst_endp = "192.168.252.11", 8443 in
+                  nat_rule "insert" ctx br_endp ip dst_endp >>= function
+                  | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
+                  | `Ok (ex_ip, ex_port) ->
+                     let dst_endp = Printf.sprintf "%s:%d" ex_ip ex_port in
+                     Tbl.update_bridge_endp s id domain (src_endp, dst_endp) >>= fun () ->
+                     let body =
+                       let l =
+                         ["ip", ex_ip |> Ezjsonm.string;
+                          "port", string_of_int ex_port |> Ezjsonm.string] in
+                       let obj = Ezjsonm.dict l in
+                       Ezjsonm.to_string obj
+                       |> Cohttp_lwt_body.of_string in
+                     let () = stop_timer pclock "insert" in
+                     Https.respond ~status:`OK ~body ()
+                else
+                  let ex_ip, ex_port =
+                    match Astring.String.cut ~sep:":" endp with
+                    | Some (ip, port) -> ip, port
+                    | None -> failwith ("non-parsable endpoint: " ^ endp) in
                   let body =
                     let l =
                       ["ip", ex_ip |> Ezjsonm.string;
-                       "port", string_of_int ex_port |> Ezjsonm.string] in
+                       "port", ex_port |> Ezjsonm.string] in
                     let obj = Ezjsonm.dict l in
                     Ezjsonm.to_string obj
                     |> Cohttp_lwt_body.of_string in
-                  let () = stop_timer pclock "insert" in
-                  Https.respond ~status:`OK ~body ())
-             else
-               let ex_ip, ex_port =
-                 match Astring.String.cut ~sep:":" endp with
-                 | Some (ip, port) -> ip, port
-                 | None -> failwith ("non-parsable endpoint: " ^ endp) in
-               let body =
-                 let l =
-                   ["ip", ex_ip |> Ezjsonm.string;
-                    "port", ex_port |> Ezjsonm.string] in
-                 let obj = Ezjsonm.dict l in
-                 Ezjsonm.to_string obj
-                 |> Cohttp_lwt_body.of_string in
-               let () = stop_timer pclock "conf" in
-               Https.respond ~status:`OK ~body ()
-          | false ->
-             let info = "unauthorized" in
-             let () = stop_timer pclock info in
-             Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ())
+                  let () = stop_timer pclock "conf" in
+                  Https.respond ~status:`OK ~body ()
+             | false ->
+                let info = "unauthorized" in
+                let () = stop_timer pclock info in
+                Https.respond ~status:`Unauthorized ~body:Cohttp_lwt_body.empty ())
 
 
   let upgrade conf tls_conf f =
