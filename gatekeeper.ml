@@ -327,6 +327,7 @@ module Main
                insert_nat_rule ctx br_endp ip dst_endp >>= function
                | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
                | `Ok (ex_ip, ex_port) ->
+                  let ex_ip = "128.232.98.227" in
                   let dst_endp = Printf.sprintf "%s:%d" ex_ip ex_port in
                   Tbl.update_bridge_endp s id domain (src_endp, dst_endp) >>= fun () ->
                   let body =

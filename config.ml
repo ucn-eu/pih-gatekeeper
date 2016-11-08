@@ -13,11 +13,7 @@ let keys = Key.[
   abstract persist_port; ]
 
 
-let stack =
-  if_impl Key.is_xen
-    (direct_stackv4_with_default_ipv4 (netif "0"))
-    (socket_stackv4 [Ipaddr.V4.any])
-
+let stack = generic_stackv4 (netif "0")
 
 let resolver_impl = resolver_dns stack
 let conduit_impl = conduit_direct stack
