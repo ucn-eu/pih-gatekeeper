@@ -270,10 +270,17 @@ module Main
 
   (* start NAT and coressponding unikernels for [domain] *)
   let wakeup_domain jitsu domain =
-      Lwt.catch (fun () ->
+    List.filter (fun lst -> List.mem_assoc "name" lst) jitsu
+    |> function
+      | [] -> return @@ `Error ()
+      | d :: _ ->
+         let ip = List.assoc "ip" d in
+         let port = List.assoc "port" d |> int_of_string in
+         return @@ `Ok (ip, port)
+      (*Lwt.catch (fun () ->
         Gk_jitsu.start jitsu domain >>= fun domain_endp ->
         return @@ `Ok domain_endp)
-        (function exn -> return @@ `Error ())
+        (function exn -> return @@ `Error ())*)
 
 
   let insert_nat_rule ctx (ip, port) src_ip dst_endp =
@@ -327,7 +334,7 @@ module Main
                insert_nat_rule ctx br_endp ip dst_endp >>= function
                | `Error _ -> Lwt.fail (Failure "insert_nat_rule")
                | `Ok (ex_ip, ex_port) ->
-                  let ex_ip = "128.232.98.227" in
+                  let ex_ip = "192.168.1.136" in
                   let dst_endp = Printf.sprintf "%s:%d" ex_ip ex_port in
                   Tbl.update_bridge_endp s id domain (src_endp, dst_endp) >>= fun () ->
                   let body =
@@ -416,7 +423,8 @@ module Main
     let time_to_float () =
       Clock.now_d_ps pclock |> Ptime.v |> Ptime.to_float_s in
 
-    Gk_jitsu.init time_to_float 200.0 Vm_configs.conf >>= fun jitsu ->
+    (*Gk_jitsu.init time_to_float 200.0 Vm_configs.conf*)
+    return Vm_configs.conf >>= fun jitsu ->
     wakeup_domain jitsu "bridge" >>= function
     | `Error _ -> Lwt.fail (Failure "can't start pih-bridge")
     | `Ok br_endp ->
