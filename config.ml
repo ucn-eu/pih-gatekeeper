@@ -31,7 +31,6 @@ let () =
       "git";
       "mirage-git";
       "irmin";
-      "vchan";
       "tls"; ] in
   let libraries =
     [ "uuidm";
@@ -39,9 +38,7 @@ let () =
       "irmin.git";
       "mirage-http";
       "pih-store";
-      "tls.mirage";
-      "ppx_sexp_conv";
-      "vchan.xen" ] in
+      "tls.mirage"; ] in
   register ~keys ~packages ~libraries "gatekeeper" [
     main $ stack $ resolver_impl $ conduit_impl $ tls $ default_posix_clock;
   ]
