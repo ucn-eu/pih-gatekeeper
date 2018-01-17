@@ -143,11 +143,11 @@ Then click the *up* button, the meta data will be published through MUSE cloud. 
 [irmin]:https://github.com/mirage/irmin
 
 <!-- pictures -->
-[start gatekeeper]:https://www.cl.cam.ac.uk/~ql272/pics/start_gatekeeper.png "start gatekeeper"
-[apply access]:https://www.cl.cam.ac.uk/~ql272/pics/apply_access.png "apply access right"
-[pending requests]:https://www.cl.cam.ac.uk/~ql272/pics/pending_requests.png "pending requests"
-[approved access]:https://www.cl.cam.ac.uk/~ql272/pics/approved_access.png "approved access"
-[approved gk bridge]:https://www.cl.cam.ac.uk/~ql272/pics/gk_bridge_approved.png "gatekeeper bridge configuration after approval"
-[review interface]:https://www.cl.cam.ac.uk/~ql272/pics/movie_review.png "movie review interface"
-[catalog meta data]:https://www.cl.cam.ac.uk/~ql272/pics/catalog1.png "catalog meta data"
-[catalog delegate/revoke]:https://www.cl.cam.ac.uk/~ql272/pics/catalog2.png "catalog delegation and revocation"
+[start gatekeeper]:https://www.cl.cam.ac.uk/~ql272/_old/pics/start_gatekeeper.png "start gatekeeper"
+[apply access]:https://www.cl.cam.ac.uk/~ql272/_old/pics/apply_access.png "apply access right"
+[pending requests]:https://www.cl.cam.ac.uk/~ql272/_old/pics/pending_requests.png "pending requests"
+[approved access]:https://www.cl.cam.ac.uk/~ql272/_old/pics/approved_access.png "approved access"
+[approved gk bridge]:https://www.cl.cam.ac.uk/~ql272/_old/pics/gk_bridge_approved.png "gatekeeper bridge configuration after approval"
+[review interface]:https://www.cl.cam.ac.uk/~ql272/_old/pics/movie_review.png "movie review interface"
+[catalog meta data]:https://www.cl.cam.ac.uk/~ql272/_old/pics/catalog1.png "catalog meta data"
+[catalog delegate/revoke]:https://www.cl.cam.ac.uk/~ql272/_old/pics/catalog2.png "catalog delegation and revocation"
